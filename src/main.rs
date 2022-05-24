@@ -183,18 +183,18 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
         let cur_log_datetime = match cur_log_datetime {
             Ok(datetime) => datetime,
             Err(error) => {
-                println!("Warning: Couldn't parse log datetime {}", log_record.get(1).unwrap());
+                println!("Warning: Couldn't parse log datetime {}", log_record.get(log_datetime_idx).unwrap());
                 continue;
             }
         };
 
         let cur_novelty_datetime = DateTime::parse_from_rfc3339(
-            log_record.get(log_datetime_idx).unwrap()
+            log_record.get(novelty_datetime_idx).unwrap()
         );
         let cur_novelty_datetime = match cur_novelty_datetime {
             Ok(datetime) => datetime,
             Err(error) => {
-                println!("Warning: Couldn't parse novelty datetime {}", log_record.get(1).unwrap());
+                println!("Warning: Couldn't parse novelty datetime {}", log_record.get(novelty_datetime_idx).unwrap());
                 continue;
             }
         };
@@ -274,7 +274,7 @@ fn main() {
     let mut n_jobs = 0;
 
     // Set up reader workers
-    let n_reader_workers = 4;
+    let n_reader_workers = num_cpus::get() - 1;
     let reader_pool = ThreadPool::new(n_reader_workers);
     let (reader_tx, reader_rx) = sync_channel(0);
 

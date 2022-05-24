@@ -14,6 +14,7 @@ threadpool = "1.8.1"
 chrono = "0.4.19"
 rusqlite = "0.27.0"
 itertools = "0.10.3"
+num_cpus = "1.13.1"
 
 [profile.release]
 lto = "fat"
