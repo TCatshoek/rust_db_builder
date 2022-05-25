@@ -268,7 +268,7 @@ fn main() {
     conn.execute_batch(
         "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = 0;
-             PRAGMA cache_size = 4000000;
+             PRAGMA cache_size = 1000000;
              PRAGMA locking_mode = EXCLUSIVE;
              PRAGMA temp_store = MEMORY;
              PRAGMA defer_foreign_keys = TRUE;"
@@ -320,16 +320,14 @@ fn main() {
 
             let svc_hostname_map = match service_id_map.get(hostname) {
                 None => {
-                    println!("Couldn't find service id for hostname: {}, (service: {})", hostname, svcname);
-                    continue;
+                    panic!("Couldn't find service id for hostname: {}, (service: {})", hostname, svcname);
                 }
                 Some(x) => x
             };
 
             let svc_id = match svc_hostname_map.get(svcname) {
                 None => {
-                    println!("Couldn't find service id for service: {}, (hostname: {})", svcname, hostname);
-                    continue;
+                    panic!("Couldn't find service id for service: {}, (hostname: {})", svcname, hostname);
                 }
                 Some(x) => x.clone()
             };
