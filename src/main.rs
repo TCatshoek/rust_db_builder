@@ -2,19 +2,18 @@ use glob::glob;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::zip;
-use std::num::ParseFloatError;
 use std::path::Path;
 use std::path::PathBuf;
 use threadpool::ThreadPool;
 use std::sync::mpsc::sync_channel;
 use clap::Parser;
 use named_tuple::named_tuple;
-use chrono::{Utc, DateTime, ParseResult, ParseError, FixedOffset};
-use std::fs::File;
-use std::thread;
-use csv::Reader;
+use chrono::{DateTime};
+
+
+
 use rusqlite::{params, Connection, Result, ToSql};
-use itertools::izip;
+
 
 /// Build a database
 #[derive(Parser, Debug)]
@@ -26,11 +25,15 @@ struct Args {
 
     ///Path to the novelty scores for each log entry
     #[clap(short, long)]
-    noveltypath: String
+    noveltypath: String,
+
+    ///Path to the sqlite database file
+    #[clap(long)]
+    db: String
 }
 
 struct LogData {
-    timestamp: DateTime<Utc>,
+    // timestamp: DateTime<Utc>,
     timestamp_str: String,
     message: String,
     novelty_score: f32
@@ -46,9 +49,15 @@ named_tuple!(
 
 
 fn get_hostnames(path: &str) -> HashSet<String> {
+    let glob_pattern = PathBuf::from(path)
+        .join("*.csv")
+        .to_str()
+        .unwrap()
+        .to_string();
 
-    let mut glob_pattern = String::from(path);
-    glob_pattern.push_str("*.csv");
+    // println!("host glob: {}", &glob_pattern);
+    // let mut glob_pattern = String::from(path);
+    // glob_pattern.push_str("*.csv");
 
     let csv_file_paths = glob(&glob_pattern).expect("Failed to parse glob pattern");
 
@@ -71,9 +80,16 @@ fn get_hostnames(path: &str) -> HashSet<String> {
 
 fn get_svcnames(hostname: &str, path: &str) -> HashSet<String> {
 
-    let mut glob_pattern = String::from(path);
-    glob_pattern.push_str(hostname);
-    glob_pattern.push_str(".*.csv");
+    let glob_pattern = PathBuf::from(path)
+        .join(format!("{}{}", hostname, ".*.csv"))
+        .to_str().unwrap()
+        .to_string();
+
+    // println!("svc glob: {}", &glob_pattern);
+
+    // let mut glob_pattern = String::from(path);
+    // glob_pattern.push_str(hostname);
+    // glob_pattern.push_str(".*.csv");
 
     let csv_file_paths = glob(&glob_pattern).expect("Failed to parse glob pattern");
 
@@ -136,8 +152,13 @@ fn get_hosts_and_services(logpath: &str, noveltypath: &str) -> HashMap<String, H
             assert!(cur_novelty_path.exists());
             assert!(cur_log_path.exists());
 
+            let svcname_stripped = svcname
+                .strip_prefix("csv_").unwrap_or(svcname);
+            let svcname_stripped = svcname_stripped
+                .strip_suffix("_").unwrap_or(svcname_stripped);
+
             data.get_mut(hostname).unwrap()
-                .insert(svcname.clone(), CsvPaths::new(cur_log_path, cur_novelty_path));
+                .insert(svcname_stripped.to_string(), CsvPaths::new(cur_log_path, cur_novelty_path));
 
         }
     }
@@ -170,7 +191,7 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
     let novelty_sum_scores_idx = novelty_headers.iter().position(|r| r == "sum scores")
         .expect(&*format!("Couldn't find sum scores header in {:?}", novelty_path));
 
-    let mut counter = 1;
+    // let mut counter = 1;
     for (log, novelty) in zip(log_reader.records(), novelty_reader.records()) {
         let log_record = log.unwrap();
         let novelty_record = novelty.unwrap();
@@ -183,7 +204,7 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
         let cur_log_datetime = match cur_log_datetime {
             Ok(datetime) => datetime,
             Err(error) => {
-                println!("Warning: Couldn't parse log datetime {}", log_record.get(log_datetime_idx).unwrap());
+                println!("Warning: Couldn't parse log datetime {}, {}", log_record.get(log_datetime_idx).unwrap(), error);
                 continue;
             }
         };
@@ -194,7 +215,7 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
         let cur_novelty_datetime = match cur_novelty_datetime {
             Ok(datetime) => datetime,
             Err(error) => {
-                println!("Warning: Couldn't parse novelty datetime {}", log_record.get(novelty_datetime_idx).unwrap());
+                println!("Warning: Couldn't parse novelty datetime {}, {}", log_record.get(novelty_datetime_idx).unwrap(), error);
                 continue;
             }
         };
@@ -220,19 +241,18 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
         };
         let cur_novelty_score = match cur_novelty_score {
             Ok(x) => x,
-            Err(error) => { println!("Couldn't parse float: {:?}", novelty_record); continue;}
+            Err(error) => { println!("Couldn't parse float: {:?}, {}", novelty_record, error); continue;}
         };
 
         let cur_logdata = LogData {
-            timestamp: cur_log_datetime.with_timezone(&Utc),
-            timestamp_str: cur_log_datetime.to_string(),
+            // timestamp: cur_log_datetime.with_timezone(&Utc),
+            timestamp_str: cur_log_datetime.format("%F %T%.6f").to_string(),
             message: cur_msg,
             novelty_score: cur_novelty_score
         };
 
         log_data.push(cur_logdata);
 
-        counter += 1;
     }
 
     // return counter;
@@ -243,52 +263,84 @@ fn main() {
     let args = Args::parse();
 
     // Database
-    let mut conn = Connection::open("test.db").unwrap();
-
-    conn.execute(
-        "DROP TABLE IF EXISTS logline", []
-    ).unwrap();
-
-    conn.execute(
-        "CREATE TABLE logline (
-                id              INTEGER PRIMARY KEY,
-                datetime        TEXT,
-                message         TEXT,
-                novelty_score   REAL
-                )",
-        []
-    ).unwrap();
+    let mut conn = Connection::open(args.db).unwrap();
 
     conn.execute_batch(
         "PRAGMA journal_mode = OFF;
              PRAGMA synchronous = 0;
-             PRAGMA cache_size = 1000000;
+             PRAGMA cache_size = 4000000;
              PRAGMA locking_mode = EXCLUSIVE;
-             PRAGMA temp_store = MEMORY;")
+             PRAGMA temp_store = MEMORY;
+             PRAGMA defer_foreign_keys = TRUE;"
+    )
     .unwrap();
 
-    println!("Getting hosts and services...");
+    // Get the service id for all services, so we can insert loglines with the correct service later
+    let mut service_id_map: HashMap<String, HashMap<String, i32>> = HashMap::new();
+    {
+        let mut stmt = conn.prepare("
+            SELECT service.id, service.name, host.name
+            FROM service
+            JOIN host ON service.host_id = host.id
+        ").unwrap();
+
+        let rows = stmt.query_map([], |row| {
+            let svc_id: i32 = row.get(0).unwrap();
+            let svcname: String = row.get(1).unwrap();
+            let hostname: String = row.get(2).unwrap();
+            return Ok((svc_id, svcname, hostname));
+        }).unwrap();
+
+        for row in rows {
+            let (svc_id, svcname, hostname) = row.unwrap();
+            println!("{}, {}, {}", svc_id, svcname, hostname);
+            let h_map = service_id_map.entry(hostname).or_insert(HashMap::new());
+            h_map.insert(svcname, svc_id);
+        }
+    }
+    //service_id_map.insert(String::from(row.get(1)?), String::from(row.get(0)?))
+    // println!("{:?}", service_id_map);
+
+    println!("Getting hosts and services paths...");
     let data = get_hosts_and_services(&args.logpath, &args.noveltypath);
 
     println!("Building database...");
     let mut n_jobs = 0;
 
     // Set up reader workers
-    let n_reader_workers = num_cpus::get() - 1;
+    let n_reader_workers = 4; //num_cpus::get() - 1;
     let reader_pool = ThreadPool::new(n_reader_workers);
-    let (reader_tx, reader_rx) = sync_channel(0);
+    let (reader_tx, reader_rx) = sync_channel(8);
 
     for hostname in data.keys() {
         for svcname in data.get(hostname).unwrap().keys() {
+            println!("Loading {}, {}", hostname, svcname);
             let paths = data[hostname][svcname].clone();
             let tx = reader_tx.clone();
+
+            let svc_hostname_map = match service_id_map.get(hostname) {
+                None => {
+                    println!("Couldn't find service id for hostname: {}, (service: {})", hostname, svcname);
+                    continue;
+                }
+                Some(x) => x
+            };
+
+            let svc_id = match svc_hostname_map.get(svcname) {
+                None => {
+                    println!("Couldn't find service id for service: {}, (hostname: {})", svcname, hostname);
+                    continue;
+                }
+                Some(x) => x.clone()
+            };
+
             n_jobs += 1;
             reader_pool.execute(move|| {
                 let result = get_relevant_data(
                     paths.log_path(),
                     paths.novelty_path()
                 );
-                tx.send(result).unwrap();
+                tx.send((result, svc_id)).unwrap();
             });
         }
     }
@@ -302,15 +354,21 @@ fn main() {
     {
         let tx = &transaction;
 
-        let mut insert_query_single = tx.prepare_cached("INSERT INTO logline (datetime, message, novelty_score) VALUES (?1, ?2, ?3)").unwrap();
-        let mut query_params = " (?, ?, ?),".repeat(chunksize);
+        // Prepare single line insert query
+        let mut insert_query_single = tx.prepare_cached("
+            INSERT INTO logline (timestamp, message, novelty_score, service_id) VALUES (?1, ?2, ?3, ?4)
+        ").unwrap();
+
+        // Prepare batch insert query
+        let mut query_params = " (?, ?, ?, ?),".repeat(chunksize);
         query_params.pop();
-        let query_str= format!("INSERT INTO logline (datetime, message, novelty_score) VALUES {}", query_params);
+        let query_str= format!("INSERT INTO logline (timestamp, message, novelty_score, service_id) VALUES {}", query_params);
         let mut insert_query = tx.prepare_cached(query_str.as_str()).unwrap();
 
+        // Receive data and insert
         while jobs_finished != n_jobs {
-            let cur_data = reader_rx.recv().unwrap();
-            let cur_data_len = cur_data.len();
+            let (cur_data, svc_id) = reader_rx.recv().unwrap();
+
             let n_chunks = cur_data.len() / chunksize;
             let n_rest = cur_data.len() - (n_chunks * chunksize);
 
@@ -322,6 +380,7 @@ fn main() {
                     sql_params.push(&data.timestamp_str as &dyn ToSql);
                     sql_params.push(&data.message as &dyn ToSql);
                     sql_params.push(&data.novelty_score as &dyn ToSql);
+                    sql_params.push(&svc_id as &dyn ToSql);
                 }
 
                 insert_query.execute(&*sql_params).unwrap();
@@ -329,9 +388,13 @@ fn main() {
 
             // Insert remaining data, if any
             if n_rest > 0 {
-
                 for data in &cur_data[n_chunks*chunksize..] {
-                    insert_query_single.execute(params![data.timestamp_str, data.message, data.novelty_score]).unwrap();
+                    insert_query_single.execute(params![
+                        data.timestamp_str,
+                        data.message,
+                        data.novelty_score,
+                        svc_id
+                    ]).unwrap();
                 }
             }
 
@@ -339,6 +402,8 @@ fn main() {
             println!("[{}/{}] {}", jobs_finished, n_jobs, cur_data.len());
         }
     }
+
+    println!("Committing...");
     transaction.commit().unwrap();
 
     conn.close().unwrap();
