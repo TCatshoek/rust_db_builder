@@ -22,3 +22,6 @@ codegen-units = 1
 panic = "abort"
 
 
+# Fix for lsqlite3 not found on windows
+[features]
+windows = ["rusqlite/bundled"]

@@ -1,0 +1,106 @@
+on:
+  push:
+    tags:
+      - "v*"
+
+name: CI
+
+jobs:
+  linux_x86_64:
+    name: Rust DB builder - linux x86 64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+
+      - name: Rename
+        run: mv target/release/db_builder target/release/db_builder_linux_x86_64
+
+      - name: Package
+        uses: actions/upload-artifact@v3
+        with:
+          name: db_builder_linux_x86_64
+          path: target/release/db_builder_linux_x86_64
+
+  windows_x86_64:
+    name: Rust DB builder - windows x86 64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-gnu
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --release --all-features --features windows --target x86_64-pc-windows-gnu
+
+      - name: Rename
+        run: mv target/x86_64-pc-windows-gnu/release/db_builder.exe target/x86_64-pc-windows-gnu/release/db_builder_windows_x86_64.exe
+
+      - name: Package
+        uses: actions/upload-artifact@v3
+        with:
+          name: db_builder_windows_x86_64
+          path: target/x86_64-pc-windows-gnu/release/db_builder_windows_x86_64.exe
+
+  macOS_x86_64:
+    name: Rust DB builder - macOS x86 64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features
+
+      - name: Rename
+        run: mv target/release/db_builder target/release/db_builder_macos_x86_64
+
+      - name: Package
+        uses: actions/upload-artifact@v3
+        with:
+          name: db_builder_macos_x86_64
+          path: target/release/db_builder_macos_x86_64
+
+  tagged-release:
+    name: "Tagged Release"
+    runs-on: "ubuntu-latest"
+    needs: [ linux_x86_64, windows_x86_64, macOS_x86_64 ]
+
+    steps:
+      - uses: actions/download-artifact@v3
+        id: download_linux
+        with:
+          name: db_builder_linux_x86_64
+
+      - uses: actions/download-artifact@v3
+        id: download_windows
+        with:
+          name: db_builder_windows_x86_64
+
+      - uses: actions/download-artifact@v3
+        id: download_macos
+        with:
+          name: db_builder_macos_x86_64
+
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: true
+          files: |
+            db_builder_linux_x86_64
+            db_builder_windows_x86_64.exe
+            db_builder_macos_x86_64

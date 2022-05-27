@@ -1,17 +1,12 @@
 use glob::glob;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::iter::zip;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use threadpool::ThreadPool;
 use std::sync::mpsc::sync_channel;
 use clap::Parser;
 use named_tuple::named_tuple;
 use chrono::{DateTime};
-
-
-
 use rusqlite::{params, Connection, Result, ToSql};
 
 
@@ -33,7 +28,6 @@ struct Args {
 }
 
 struct LogData {
-    // timestamp: DateTime<Utc>,
     timestamp_str: String,
     message: String,
     novelty_score: f32
@@ -54,10 +48,6 @@ fn get_hostnames(path: &str) -> HashSet<String> {
         .to_str()
         .unwrap()
         .to_string();
-
-    // println!("host glob: {}", &glob_pattern);
-    // let mut glob_pattern = String::from(path);
-    // glob_pattern.push_str("*.csv");
 
     let csv_file_paths = glob(&glob_pattern).expect("Failed to parse glob pattern");
 
@@ -84,12 +74,6 @@ fn get_svcnames(hostname: &str, path: &str) -> HashSet<String> {
         .join(format!("{}{}", hostname, ".*.csv"))
         .to_str().unwrap()
         .to_string();
-
-    // println!("svc glob: {}", &glob_pattern);
-
-    // let mut glob_pattern = String::from(path);
-    // glob_pattern.push_str(hostname);
-    // glob_pattern.push_str(".*.csv");
 
     let csv_file_paths = glob(&glob_pattern).expect("Failed to parse glob pattern");
 
@@ -167,7 +151,6 @@ fn get_hosts_and_services(logpath: &str, noveltypath: &str) -> HashMap<String, H
 
 
 fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData> {
-    // println!("{:?}, {:?}", log_path, novelty_path);
     let mut log_data = Vec::new();
 
     let mut log_reader = csv::ReaderBuilder::new()
@@ -182,21 +165,15 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
     let log_headers = log_reader.headers().unwrap();
     let novelty_headers = novelty_reader.headers().unwrap();
 
-    // println!("Log headers: {:?}", log_headers);
-    // println!("Novelty headers: {:?}", novelty_headers);
-
     let log_datetime_idx = log_headers.iter().position(|r| r == "datetime").unwrap();
     let log_message_idx = log_headers.iter().position(|r| r == "message").unwrap();
     let novelty_datetime_idx = novelty_headers.iter().position(|r| r == "datetime").unwrap();
     let novelty_sum_scores_idx = novelty_headers.iter().position(|r| r == "sum scores")
         .expect(&*format!("Couldn't find sum scores header in {:?}", novelty_path));
 
-    // let mut counter = 1;
     for (log, novelty) in zip(log_reader.records(), novelty_reader.records()) {
         let log_record = log.unwrap();
         let novelty_record = novelty.unwrap();
-
-        // println!("datetime? {}", log_record.get(1).unwrap());
 
         let cur_log_datetime = DateTime::parse_from_rfc3339(
             log_record.get(log_datetime_idx).unwrap()
@@ -222,8 +199,6 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
 
         assert_eq!(cur_novelty_datetime, cur_log_datetime);
 
-        // println!("log {:?}", cur_datetime);
-
         let cur_msg = match log_record.get(log_message_idx) {
             None => {
                 println!("Couldn't parse message: {:?}", log_record);
@@ -245,7 +220,6 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
         };
 
         let cur_logdata = LogData {
-            // timestamp: cur_log_datetime.with_timezone(&Utc),
             timestamp_str: cur_log_datetime.format("%F %T%.6f").to_string(),
             message: cur_msg,
             novelty_score: cur_novelty_score
@@ -255,7 +229,6 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
 
     }
 
-    // return counter;
     return log_data;
 }
 
@@ -298,8 +271,6 @@ fn main() {
             h_map.insert(svcname, svc_id);
         }
     }
-    //service_id_map.insert(String::from(row.get(1)?), String::from(row.get(0)?))
-    // println!("{:?}", service_id_map);
 
     println!("Getting hosts and services paths...");
     let data = get_hosts_and_services(&args.logpath, &args.noveltypath);
