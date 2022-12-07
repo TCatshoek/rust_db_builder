@@ -232,6 +232,32 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData>
     return log_data;
 }
 
+fn build_host_service_id_map(conn: &Connection) -> HashMap<String, HashMap<String, i32>> {
+    let mut service_id_map: HashMap<String, HashMap<String, i32>> = HashMap::new();
+
+    let mut stmt = conn.prepare("
+            SELECT service.id, service.name, host.name
+            FROM service
+            JOIN host ON service.host_id = host.id
+        ").unwrap();
+
+    let rows = stmt.query_map([], |row| {
+        let svc_id: i32 = row.get(0).unwrap();
+        let svcname: String = row.get(1).unwrap();
+        let hostname: String = row.get(2).unwrap();
+        return Ok((svc_id, svcname, hostname));
+    }).unwrap();
+
+    for row in rows {
+        let (svc_id, svcname, hostname) = row.unwrap();
+        println!("{}, {}, {}", svc_id, svcname, hostname);
+        let h_map = service_id_map.entry(hostname).or_insert(HashMap::new());
+        h_map.insert(svcname, svc_id);
+    }
+
+    return service_id_map;
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -249,31 +275,10 @@ fn main() {
     .unwrap();
 
     // Get the service id for all services, so we can insert loglines with the correct service later
-    let mut service_id_map: HashMap<String, HashMap<String, i32>> = HashMap::new();
-    {
-        let mut stmt = conn.prepare("
-            SELECT service.id, service.name, host.name
-            FROM service
-            JOIN host ON service.host_id = host.id
-        ").unwrap();
-
-        let rows = stmt.query_map([], |row| {
-            let svc_id: i32 = row.get(0).unwrap();
-            let svcname: String = row.get(1).unwrap();
-            let hostname: String = row.get(2).unwrap();
-            return Ok((svc_id, svcname, hostname));
-        }).unwrap();
-
-        for row in rows {
-            let (svc_id, svcname, hostname) = row.unwrap();
-            println!("{}, {}, {}", svc_id, svcname, hostname);
-            let h_map = service_id_map.entry(hostname).or_insert(HashMap::new());
-            h_map.insert(svcname, svc_id);
-        }
-    }
+    let service_id_map = build_host_service_id_map(&conn);
 
     println!("Getting hosts and services paths...");
-    let data = get_hosts_and_services(&args.logpath, &args.noveltypath);
+    let host_service_map = get_hosts_and_services(&args.logpath, &args.noveltypath);
 
     println!("Building database...");
     let mut n_jobs = 0;
@@ -283,23 +288,19 @@ fn main() {
     let reader_pool = ThreadPool::new(n_reader_workers);
     let (reader_tx, reader_rx) = sync_channel(8);
 
-    for hostname in data.keys() {
-        for svcname in data.get(hostname).unwrap().keys() {
+    for hostname in host_service_map.keys() {
+        for svcname in host_service_map.get(hostname).unwrap().keys() {
             println!("Loading {}, {}", hostname, svcname);
-            let paths = data[hostname][svcname].clone();
+            let paths = host_service_map[hostname][svcname].clone();
             let tx = reader_tx.clone();
 
             let svc_hostname_map = match service_id_map.get(hostname) {
-                None => {
-                    panic!("Couldn't find service id for hostname: {}, (service: {})", hostname, svcname);
-                }
+                None => panic!("Couldn't find service id for hostname: {}, (service: {})", hostname, svcname),
                 Some(x) => x
             };
 
             let svc_id = match svc_hostname_map.get(svcname) {
-                None => {
-                    panic!("Couldn't find service id for service: {}, (hostname: {})", svcname, hostname);
-                }
+                None => panic!("Couldn't find service id for service: {}, (hostname: {})", svcname, hostname),
                 Some(x) => x.clone()
             };
 
