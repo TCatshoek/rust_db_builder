@@ -1,5 +1,7 @@
 use glob::glob;
 use std::collections::{HashMap, HashSet};
+use std::{error, fmt};
+use std::fmt::Formatter;
 use std::iter::zip;
 use std::path::{Path, PathBuf};
 use threadpool::ThreadPool;
@@ -8,7 +10,7 @@ use clap::Parser;
 use named_tuple::named_tuple;
 use chrono::{DateTime};
 use rusqlite::{params, Connection, Result, ToSql};
-
+use serde::Deserialize;
 
 /// Build a database
 #[derive(Parser, Debug)]
@@ -27,10 +29,29 @@ struct Args {
     db: String
 }
 
+// Columns read from the log files
+#[derive(Debug, Deserialize)]
+struct FullLogData {
+    datetime: String,
+    clean_message: String,
+    eventrecordid: u32,
+}
+
+// Columns read from the novelty file
+#[derive(Debug, Deserialize)]
+struct NoveltyLogData {
+    datetime: String,
+    #[serde(rename = "sum scores")]
+    sum_scores: f32
+}
+
+// Struct representing the actual data we care about
+#[derive(Debug)]
 struct LogData {
     timestamp_str: String,
     message: String,
-    novelty_score: f32
+    novelty_score: f32,
+    eventrecordid: u32
 }
 
 named_tuple!(
@@ -41,6 +62,31 @@ named_tuple!(
     }
 );
 
+// Error when matching log and novelty datetimes
+#[derive(Debug, Clone)]
+struct CSVParseError {
+    message: String,
+    filename: String,
+    line: i32,
+}
+
+impl CSVParseError {
+    fn new(message: &str, filename: &str, line: i32) -> Self{
+        CSVParseError {
+            message: String::from(message),
+            filename: String::from(filename),
+            line
+        }
+    }
+}
+
+impl fmt::Display for CSVParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "Parse error in {}:{} - {}", self.filename, self.line, self.message)
+    }
+}
+
+impl error::Error for CSVParseError {}
 
 fn get_hostnames(path: &str) -> HashSet<String> {
     let glob_pattern = PathBuf::from(path)
@@ -150,86 +196,59 @@ fn get_hosts_and_services(logpath: &str, noveltypath: &str) -> HashMap<String, H
 }
 
 
-fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Vec<LogData> {
+fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Result<Vec<LogData>, CSVParseError> {
     let mut log_data = Vec::new();
+    let log_path_str = log_path.to_str().unwrap();
+    let novelty_path_str = novelty_path.to_str().unwrap();
 
     let mut log_reader = csv::ReaderBuilder::new()
         .from_path(log_path)
-        .unwrap();
+        .map_err(|_| CSVParseError::new(
+            "Error opening log file", log_path_str, 0)
+        )?;
+
     let mut novelty_reader = csv::ReaderBuilder::new()
         .delimiter(b';')
         .flexible(true)
         .from_path(novelty_path)
-        .unwrap();
+        .map_err(|_| CSVParseError::new(
+            "Error opening novelty file", novelty_path_str, 0)
+        )?;
 
-    let log_headers = log_reader.headers().unwrap();
-    let novelty_headers = novelty_reader.headers().unwrap();
+    let mut line_n = 0;
 
-    let log_datetime_idx = log_headers.iter().position(|r| r == "datetime").unwrap();
-    let log_message_idx = log_headers.iter().position(|r| r == "message").unwrap();
-    let novelty_datetime_idx = novelty_headers.iter().position(|r| r == "datetime").unwrap();
-    let novelty_sum_scores_idx = novelty_headers.iter().position(|r| r == "sum scores")
-        .expect(&*format!("Couldn't find sum scores header in {:?}", novelty_path));
+    for (log, novelty) in zip(log_reader.deserialize(), novelty_reader.deserialize()) {
+        let log_record: FullLogData = log
+            .map_err(|e| CSVParseError::new(format!("{}", e).as_str(), log_path_str, line_n))?;
+        let novelty_record: NoveltyLogData = novelty
+            .map_err(|e| CSVParseError::new(format!("{}", e).as_str(), log_path_str, line_n))?;
 
-    for (log, novelty) in zip(log_reader.records(), novelty_reader.records()) {
-        let log_record = log.unwrap();
-        let novelty_record = novelty.unwrap();
+        let cur_log_datetime = DateTime::parse_from_rfc3339(&log_record.datetime)
+            .map_err(|e| CSVParseError::new(format!("{}", e).as_str(), log_path_str, line_n))?;
 
-        let cur_log_datetime = DateTime::parse_from_rfc3339(
-            log_record.get(log_datetime_idx).unwrap()
-        );
-        let cur_log_datetime = match cur_log_datetime {
-            Ok(datetime) => datetime,
-            Err(error) => {
-                println!("Warning: Couldn't parse log datetime {}, {}", log_record.get(log_datetime_idx).unwrap(), error);
-                continue;
-            }
-        };
+        let cur_novelty_datetime = DateTime::parse_from_rfc3339(&novelty_record.datetime)
+            .map_err(|e| CSVParseError::new(format!("{}", e).as_str(), novelty_path_str, line_n))?;
 
-        let cur_novelty_datetime = DateTime::parse_from_rfc3339(
-            log_record.get(novelty_datetime_idx).unwrap()
-        );
-        let cur_novelty_datetime = match cur_novelty_datetime {
-            Ok(datetime) => datetime,
-            Err(error) => {
-                println!("Warning: Couldn't parse novelty datetime {}, {}", log_record.get(novelty_datetime_idx).unwrap(), error);
-                continue;
-            }
-        };
-
-        assert_eq!(cur_novelty_datetime, cur_log_datetime);
-
-        let cur_msg = match log_record.get(log_message_idx) {
-            None => {
-                println!("Couldn't parse message: {:?}", log_record);
-                continue;
-            },
-            Some(x) => String::from(x)
-        };
-
-        let cur_novelty_score: Result<f32, _> = match novelty_record.get(novelty_sum_scores_idx) {
-            None => { println!("Couldn't parse novelty score : {:?}", novelty_record); continue; },
-            Some(x) => {
-                let tmp: String = x.chars().filter(|c| !c.is_whitespace()).collect();
-                tmp.parse()
-            }
-        };
-        let cur_novelty_score = match cur_novelty_score {
-            Ok(x) => x,
-            Err(error) => { println!("Couldn't parse float: {:?}, {}", novelty_record, error); continue;}
-        };
+        if cur_novelty_datetime != cur_log_datetime {
+            return Err(CSVParseError::new(
+                format!("Datetime mismatch: ({}, {})", cur_novelty_datetime, cur_log_datetime).as_str(),
+                log_path_str, line_n)
+            );
+        }
 
         let cur_logdata = LogData {
             timestamp_str: cur_log_datetime.format("%F %T%.6f").to_string(),
-            message: cur_msg,
-            novelty_score: cur_novelty_score
+            message: log_record.clean_message.to_owned(),
+            novelty_score: novelty_record.sum_scores,
+            eventrecordid: log_record.eventrecordid
         };
 
         log_data.push(cur_logdata);
 
+        line_n += 1;
     }
 
-    return log_data;
+    return Ok(log_data);
 }
 
 fn build_host_service_id_map(conn: &Connection) -> HashMap<String, HashMap<String, i32>> {
@@ -250,7 +269,7 @@ fn build_host_service_id_map(conn: &Connection) -> HashMap<String, HashMap<Strin
 
     for row in rows {
         let (svc_id, svcname, hostname) = row.unwrap();
-        println!("{}, {}, {}", svc_id, svcname, hostname);
+        // println!("{}, {}, {}", svc_id, svcname, hostname);
         let h_map = service_id_map.entry(hostname).or_insert(HashMap::new());
         h_map.insert(svcname, svc_id);
     }
@@ -305,12 +324,13 @@ fn main() {
             };
 
             n_jobs += 1;
-            reader_pool.execute(move|| {
-                let result = get_relevant_data(
+
+            reader_pool.execute(move || {
+                let logdata = get_relevant_data(
                     paths.log_path(),
                     paths.novelty_path()
                 );
-                tx.send((result, svc_id)).unwrap();
+                tx.send((logdata, svc_id)).unwrap();
             });
         }
     }
@@ -324,26 +344,46 @@ fn main() {
     {
         let tx = &transaction;
 
-        // Prepare single line insert query
+        // Prepare single line insert query - Logline
         let mut insert_query_single = tx.prepare_cached("
             INSERT INTO logline (timestamp, message, novelty_score, service_id) VALUES (?1, ?2, ?3, ?4)
         ").unwrap();
 
-        // Prepare batch insert query
+        // Prepare single line insert query - Metadata
+        let mut insert_query_single_metadata = tx.prepare_cached("
+            INSERT INTO loglineevtxmetadata (logline_id, event_record_id) VALUES (?1, ?2)
+        ").unwrap();
+
+        // Prepare batch insert query - Logline
         let mut query_params = " (?, ?, ?, ?),".repeat(chunksize);
         query_params.pop();
         let query_str= format!("INSERT INTO logline (timestamp, message, novelty_score, service_id) VALUES {}", query_params);
         let mut insert_query = tx.prepare_cached(query_str.as_str()).unwrap();
 
+        // Prepare batch insert query - Metadata
+        let mut query_params_metadata = " (?, ?),".repeat(chunksize);
+        query_params_metadata.pop();
+        let query_str_metadata= format!("INSERT INTO loglineevtxmetadata (logline_id, event_record_id) VALUES {}", query_params_metadata);
+        let mut insert_query_metadata = tx.prepare_cached(query_str_metadata.as_str()).unwrap();
+
         // Receive data and insert
         while jobs_finished != n_jobs {
-            let (cur_data, svc_id) = reader_rx.recv().unwrap();
+
+            let (cur_data, svc_id) = match reader_rx.recv().unwrap() {
+                (Ok(cur_data), svc_id) => (cur_data, svc_id),
+                (Err(e), _) => {
+                    jobs_finished += 1;
+                    println!("[{}/{}] - {}", jobs_finished, n_jobs, e);
+                    continue
+                }
+            };
 
             let n_chunks = cur_data.len() / chunksize;
             let n_rest = cur_data.len() - (n_chunks * chunksize);
 
             // Insert data in chunks of chunksize
             for i in 0..n_chunks {
+                // Insert log lines
                 let mut sql_params: Vec<_> = Vec::new();
 
                 for data in &cur_data[i*chunksize..(i+1)*chunksize] {
@@ -354,6 +394,15 @@ fn main() {
                 }
 
                 insert_query.execute(&*sql_params).unwrap();
+
+                // Insert logline metadata
+                let last_insert_ids: Vec<i64> = ((tx.last_insert_rowid() + 1 - chunksize as i64)..=tx.last_insert_rowid()).collect();
+                let mut sql_params_metadata: Vec<_> = Vec::new();
+                for (data, log_id) in zip(&cur_data[i*chunksize..(i+1)*chunksize], &last_insert_ids) {
+                    sql_params_metadata.push(log_id as &dyn ToSql);
+                    sql_params_metadata.push(&data.eventrecordid as &dyn ToSql);
+                }
+                insert_query_metadata.execute(&*sql_params_metadata).unwrap();
             }
 
             // Insert remaining data, if any
@@ -364,6 +413,11 @@ fn main() {
                         data.message,
                         data.novelty_score,
                         svc_id
+                    ]).unwrap();
+
+                    insert_query_single_metadata.execute(params![
+                        tx.last_insert_rowid(),
+                        data.eventrecordid,
                     ]).unwrap();
                 }
             }
