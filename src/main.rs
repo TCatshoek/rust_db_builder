@@ -238,7 +238,7 @@ fn get_relevant_data(log_path: &PathBuf, novelty_path: &PathBuf) -> Result<Vec<L
 
         let cur_logdata = LogData {
             timestamp_str: cur_log_datetime.format("%F %T%.6f").to_string(),
-            message: log_record.clean_message.to_owned(),
+            message: log_record.message.to_owned(),
             novelty_score: novelty_record.sum_scores,
             eventrecordid: log_record.eventrecordid
         };
