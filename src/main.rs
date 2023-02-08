@@ -33,7 +33,7 @@ struct Args {
 #[derive(Debug, Deserialize)]
 struct FullLogData {
     datetime: String,
-    clean_message: String,
+    message: String,
     eventrecordid: u32,
 }
 
