@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 /// Build a database
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[clap(author, version = env!("VERSION", "No version number set"), about, long_about = None)]
 struct Args {
     ///Path to the log entries to show in table
     #[clap(short, long)]
