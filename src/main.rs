@@ -34,7 +34,7 @@ struct Args {
 struct FullLogData {
     datetime: String,
     message: String,
-    eventrecordid: u32,
+    eventrecordid: u64,
 }
 
 // Columns read from the novelty file
@@ -51,7 +51,7 @@ struct LogData {
     timestamp_str: String,
     message: String,
     novelty_score: f32,
-    eventrecordid: u32
+    eventrecordid: u64
 }
 
 named_tuple!(
